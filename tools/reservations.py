@@ -131,29 +131,35 @@ async def create_reservation(params: dict) -> dict:
                 guest_email, restaurant_id, reservation_datetime
             )
 
-        # Need a table_id — either provided or find one
-        if not table_id:
-            tables = await check_table_availability(
-                restaurant_id, party_size, reservation_datetime
-            )
-            if not tables:
-                return {
-                    "success": False,
-                    "data": None,
-                    "error": "No tables available for the requested slot",
-                    "error_code": "UNAVAILABLE",
-                }
-            table_id = tables[0]["id"]
+        async with get_db() as db:
+            await db.execute("BEGIN EXCLUSIVE")
+            try:
+                # Need a table_id — either provided or find one
+                if not table_id:
+                    tables = await check_table_availability(
+                        restaurant_id, party_size, reservation_datetime, db=db
+                    )
+                    if not tables:
+                        return {
+                            "success": False,
+                            "data": None,
+                            "error": "No tables available for the requested slot",
+                            "error_code": "UNAVAILABLE",
+                        }
+                    table_id = tables[0]["id"]
 
-        res = await db_create_reservation(
-            idempotency_key=idempotency_key,
-            restaurant_id=restaurant_id,
-            table_id=table_id,
-            guest_id=guest["id"],
-            party_size=party_size,
-            reservation_datetime=reservation_datetime,
-            special_requests=special_requests,
-        )
+                res = await db_create_reservation(
+                    idempotency_key=idempotency_key,
+                    restaurant_id=restaurant_id,
+                    table_id=table_id,
+                    guest_id=guest["id"],
+                    party_size=party_size,
+                    reservation_datetime=reservation_datetime,
+                    special_requests=special_requests,
+                    db=db,
+                )
+            except Exception as inner_exc:
+                raise inner_exc
 
         return {
             "success": True,
@@ -217,46 +223,50 @@ async def modify_reservation(params: dict) -> dict:
         new_sr = changes.get("new_special_requests")
 
         # If changing datetime or party_size, re-check availability
-        if new_dt or new_ps:
-            check_dt = new_dt or res["reservation_datetime"]
-            check_ps = new_ps or res["party_size"]
-            tables = await check_table_availability(
-                restaurant_id, check_ps, check_dt
-            )
-            if not tables:
-                return {
-                    "success": False,
-                    "data": None,
-                    "error": "No tables available for the new slot",
-                    "error_code": "UNAVAILABLE",
-                }
-            new_table_id = tables[0]["id"]
-        else:
-            new_table_id = None
-
-        # Apply changes
         async with get_db() as db:
-            sets: list[str] = ["updated_at = ?"]
-            vals: list = [now_iso]
+            await db.execute("BEGIN EXCLUSIVE")
+            try:
+                if new_dt or new_ps:
+                    check_dt = new_dt or res["reservation_datetime"]
+                    check_ps = new_ps or res["party_size"]
+                    tables = await check_table_availability(
+                        restaurant_id, check_ps, check_dt, db=db
+                    )
+                    if not tables:
+                        return {
+                            "success": False,
+                            "data": None,
+                            "error": "No tables available for the new slot",
+                            "error_code": "UNAVAILABLE",
+                        }
+                    new_table_id = tables[0]["id"]
+                else:
+                    new_table_id = None
 
-            if new_dt:
-                sets.append("reservation_datetime = ?")
-                vals.append(new_dt)
-            if new_ps:
-                sets.append("party_size = ?")
-                vals.append(new_ps)
-            if new_sr is not None:
-                sets.append("special_requests = ?")
-                vals.append(new_sr)
-            if new_table_id:
-                sets.append("table_id = ?")
-                vals.append(new_table_id)
+                # Apply changes
+                sets: list[str] = ["updated_at = ?"]
+                vals: list = [now_iso]
 
-            vals.append(rid)
-            await db.execute(
-                f"UPDATE reservations SET {', '.join(sets)} WHERE id = ?",
-                vals,
-            )
+                if new_dt:
+                    sets.append("reservation_datetime = ?")
+                    vals.append(new_dt)
+                if new_ps:
+                    sets.append("party_size = ?")
+                    vals.append(new_ps)
+                if new_sr is not None:
+                    sets.append("special_requests = ?")
+                    vals.append(new_sr)
+                if new_table_id:
+                    sets.append("table_id = ?")
+                    vals.append(new_table_id)
+
+                vals.append(rid)
+                await db.execute(
+                    f"UPDATE reservations SET {', '.join(sets)} WHERE id = ?",
+                    vals,
+                )
+            except Exception as inner_exc:
+                raise inner_exc
 
         updated = await get_reservation_by_id(rid)
         return {

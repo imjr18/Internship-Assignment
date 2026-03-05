@@ -141,6 +141,7 @@ class AgentOrchestrator:
         """Core loop: call LLM → dispatch tools → repeat until final answer."""
         tools = get_tool_schemas()
         accumulated_content = ""
+        consecutive_tool_errors = 0
 
         for round_num in range(MAX_TOOL_ROUNDS):
             system_prompt = build_system_prompt(
@@ -219,6 +220,30 @@ class AgentOrchestrator:
                 results = await dispatch_all(
                     tool_calls_received, self.session_id
                 )
+
+                has_validation_error = any(
+                    not res.get("result", {}).get("success", False) 
+                    and ("Missing required" in str(res.get("result", {}).get("error", "")) or "Unknown tool" in str(res.get("result", {}).get("error", "")))
+                    for res in results
+                )
+                if has_validation_error:
+                    consecutive_tool_errors += 1
+                else:
+                    consecutive_tool_errors = 0
+
+                if consecutive_tool_errors >= 2:
+                    logger.warning(
+                        "circuit_breaker_triggered",
+                        session_id=self.session_id,
+                        errors=consecutive_tool_errors
+                    )
+                    fallback_msg = "Could you please provide a bit more detail? For example, the date, time, or party size you are looking for."
+                    yield {
+                        "type": "token",
+                        "content": fallback_msg
+                    }
+                    self.context.add_assistant_message(fallback_msg)
+                    return
 
                 for res in results:
                     tool_name = next(

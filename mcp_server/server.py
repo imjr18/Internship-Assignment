@@ -18,11 +18,19 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
+import uuid
 from contextlib import asynccontextmanager
 
+# ── Windows fix: ProactorEventLoop breaks Groq SDK streaming ───
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
 import structlog
 
 from database.seed_data import run_seed
@@ -79,6 +87,32 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# ── CORS — allow Next.js frontend ──────────────────────────────
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+# ── Session Store — agent instances for Next.js frontend ───────
+
+_chat_sessions: dict[str, object] = {}
+
+
+def _get_agent(session_id: str):
+    from agent.orchestrator import AgentOrchestrator
+    if session_id not in _chat_sessions:
+        _chat_sessions[session_id] = AgentOrchestrator(
+            session_id=session_id
+        )
+    return _chat_sessions[session_id]
 
 
 # ── JSON-RPC Method Handlers ───────────────────────────────────
@@ -226,3 +260,160 @@ async def health_check():
         "version": SERVER_INFO["version"],
         "tools_count": len(MCP_TOOLS_SCHEMA_LIST),
     }
+
+
+# ═══════════════════════════════════════════════════════════════
+# NEXT.JS FRONTEND ENDPOINTS
+# ═══════════════════════════════════════════════════════════════
+
+
+@app.post("/chat")
+async def chat_stream(request: Request):
+    """
+    Streaming chat endpoint for Next.js frontend.
+    Accepts: {"session_id": str, "message": str}
+    Returns: Server-Sent Events stream
+    """
+    body = await request.json()
+    session_id = body.get("session_id", str(uuid.uuid4()))
+    message = body.get("message", "").strip()
+
+    if not message:
+        return JSONResponse({"error": "empty message"}, status_code=400)
+
+    async def event_stream():
+        try:
+            agent = _get_agent(session_id)
+            async for event in agent.handle_message(message):
+                etype = event.get("type", "")
+                if etype == "token":
+                    text = event.get("content", "")
+                    if text:
+                        payload = json.dumps({"token": text})
+                        yield f"data: {payload}\n\n"
+                elif etype == "tool_start":
+                    tool_name = event.get("tool_name", "unknown")
+                    payload = json.dumps(
+                        {"token": f"[TOOL_START:{tool_name}]"}
+                    )
+                    yield f"data: {payload}\n\n"
+                elif etype == "tool_result":
+                    tool_name = event.get("tool_name", "unknown")
+                    result_data = event.get("result", {})
+                    # Check for booking completion
+                    if (tool_name == "create_reservation"
+                            and isinstance(result_data, dict)
+                            and result_data.get("success")):
+                        booking_payload = json.dumps(
+                            {"token": f"[BOOKING_COMPLETE:{json.dumps(result_data)}]"}
+                        )
+                        yield f"data: {booking_payload}\n\n"
+                    payload = json.dumps(
+                        {"token": f"[TOOL_END:{tool_name}]"}
+                    )
+                    yield f"data: {payload}\n\n"
+                elif etype == "error":
+                    error_msg = event.get("message", "Unknown error")
+                    payload = json.dumps({"error": error_msg})
+                    yield f"data: {payload}\n\n"
+        except Exception as e:
+            import traceback
+            logger.error("chat_stream_error", error=str(e), traceback=traceback.format_exc())
+            error_payload = json.dumps({"error": str(e)})
+            yield f"data: {error_payload}\n\n"
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/restaurants")
+async def get_restaurants_for_frontend():
+    """
+    Returns all restaurants for the Next.js Browse screen.
+    Parses JSON string fields into proper arrays for JavaScript.
+    """
+    from database.queries import get_all_restaurants
+    import json as _json
+
+    raw = await get_all_restaurants()
+    result = []
+    for r in raw:
+        try:
+            dietary = _json.loads(
+                r.get("dietary_certifications", "[]") or "[]"
+            )
+        except Exception:
+            dietary = []
+        try:
+            ambiance = _json.loads(
+                r.get("ambiance_tags", "[]") or "[]"
+            )
+        except Exception:
+            ambiance = []
+        try:
+            hours = _json.loads(
+                r.get("operating_hours", "{}") or "{}"
+            )
+        except Exception:
+            hours = {"open": "17:00", "close": "23:00"}
+
+        result.append({
+            "id": r["id"],
+            "name": r["name"],
+            "neighborhood": r.get("neighborhood", ""),
+            "cuisine_type": r.get("cuisine_type", ""),
+            "price_range": r.get("price_range", 2),
+            "total_capacity": r.get("total_capacity", 0),
+            "dietary_certifications": dietary,
+            "ambiance_tags": ambiance,
+            "operating_hours": hours,
+            "description": r.get("description", ""),
+        })
+    return result
+
+
+@app.get("/booking-state/{session_id}")
+async def get_booking_state(session_id: str):
+    """
+    Returns current booking state for a session.
+    Next.js polls this to update the context panel.
+    """
+    if session_id not in _chat_sessions:
+        return {
+            "restaurant_name": None,
+            "party_size": None,
+            "date": None,
+            "time": None,
+            "conversation_state": "GREETING",
+            "confirmation_code": None,
+        }
+    agent = _chat_sessions[session_id]
+    try:
+        state = agent.context.get_booking_state()
+        return {
+            "restaurant_name": state.get("restaurant_name"),
+            "party_size": state.get("party_size"),
+            "date": state.get("date"),
+            "time": state.get("time"),
+            "conversation_state": agent.context.get_conversation_state(),
+            "confirmation_code": state.get("confirmation_code"),
+        }
+    except Exception:
+        return {
+            "restaurant_name": None,
+            "party_size": None,
+            "date": None,
+            "time": None,
+            "conversation_state": "GREETING",
+            "confirmation_code": None,
+        }
+

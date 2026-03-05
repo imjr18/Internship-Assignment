@@ -13,6 +13,7 @@ import json
 import uuid
 import random
 import string
+import aiosqlite
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -129,6 +130,7 @@ async def check_table_availability(
     party_size: int,
     datetime_str: str,
     duration_minutes: int = 90,
+    db: getattr(aiosqlite, 'Connection', Any) | None = None,
 ) -> list[dict]:
     """Find tables at *restaurant_id* that can seat *party_size* and have no
     overlapping confirmed/hold reservations for the requested window.
@@ -165,8 +167,13 @@ async def check_table_availability(
         datetime_str,
     )
 
-    async with get_db() as db:
+    if db:
         cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    async with get_db() as db_inner:
+        cursor = await db_inner.execute(query, params)
         rows = await cursor.fetchall()
         return [_row_to_dict(r) for r in rows]
 
@@ -183,6 +190,7 @@ async def create_reservation(
     party_size: int,
     reservation_datetime: str,
     special_requests: str = "",
+    db: getattr(aiosqlite, 'Connection', Any) | None = None,
 ) -> dict:
     """Insert a new reservation. Respects idempotency: if the same
     *idempotency_key* already exists, the existing row is returned instead.
@@ -194,9 +202,8 @@ async def create_reservation(
         sqlite3.IntegrityError on FK / uniqueness violations other than the
         idempotency key.
     """
-    async with get_db() as db:
-        # Idempotency check
-        cursor = await db.execute(
+    async def _insert_impl(conn):
+        cursor = await conn.execute(
             "SELECT * FROM reservations WHERE idempotency_key = ?",
             (idempotency_key,),
         )
@@ -208,7 +215,7 @@ async def create_reservation(
         confirmation_code = _generate_confirmation_code()
         now = _now_iso()
 
-        await db.execute(
+        await conn.execute(
             """
             INSERT INTO reservations
                 (id, idempotency_key, restaurant_id, table_id, guest_id,
@@ -222,12 +229,19 @@ async def create_reservation(
                 confirmation_code, now, now,
             ),
         )
-        await db.commit()
 
-        cursor = await db.execute(
+        cursor = await conn.execute(
             "SELECT * FROM reservations WHERE id = ?", (reservation_id,)
         )
         return _row_to_dict(await cursor.fetchone())
+
+    if db:
+        return await _insert_impl(db)
+
+    async with get_db() as db_inner:
+        res = await _insert_impl(db_inner)
+        await db_inner.commit()
+        return res
 
 
 async def get_reservation_by_id(reservation_id: str) -> dict | None:

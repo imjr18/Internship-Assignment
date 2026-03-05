@@ -43,3 +43,9 @@ Thumbs.db
 
 # Handoff doc (too large, internal only)
 handoff.md
+
+# Next.js frontend
+frontend_next/.env.local
+frontend_next/.next/
+frontend_next/node_modules/
+

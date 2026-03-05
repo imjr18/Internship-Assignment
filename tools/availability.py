@@ -129,82 +129,87 @@ async def check_availability(params: dict) -> dict:
         offsets = [0, -30, 30, -60, 60]
         available_slots: list[dict] = []
 
-        for offset in offsets:
-            slot_dt = base_dt + timedelta(minutes=offset)
-            slot_str = slot_dt.isoformat()
-            tables = await check_table_availability(
-                restaurant_id=restaurant_id,
-                party_size=party_size,
-                datetime_str=slot_str,
-                duration_minutes=duration_minutes,
-            )
-            for t in tables:
-                # Avoid duplicates
-                if not any(s["table_id"] == t["id"] and s["datetime"] == slot_str
-                           for s in available_slots):
-                    available_slots.append({
-                        "table_id": t["id"],
-                        "capacity": t["capacity"],
-                        "location_tag": t.get("location_tag", ""),
-                        "is_accessible": bool(t.get("is_accessible", 0)),
-                        "datetime": slot_str,
-                    })
-
-        if not available_slots:
-            # No slots — get waitlist count
-            async with get_db() as db:
-                cur = await db.execute(
-                    "SELECT COUNT(*) FROM waitlist "
-                    "WHERE restaurant_id = ? AND status = 'waiting'",
-                    (restaurant_id,),
-                )
-                (wait_count,) = await cur.fetchone()
-
-            return {
-                "success": True,
-                "data": {
-                    "available": False,
-                    "restaurant_name": restaurant["name"],
-                    "slots": [],
-                    "waitlist_position": wait_count + 1,
-                },
-                "error": None,
-                "error_code": None,
-            }
-
-        # 4. Create a hold on the best slot (first available)
-        best = available_slots[0]
-        hold_id = str(uuid.uuid4())
-        now_iso = datetime.now(timezone.utc).isoformat()
-        hold_expires = (
-            datetime.now(timezone.utc) + timedelta(minutes=3)
-        ).isoformat()
-
         from database.queries import _generate_confirmation_code
 
         async with get_db() as db:
-            await db.execute(
-                """
-                INSERT INTO reservations
-                    (id, idempotency_key, restaurant_id, table_id, guest_id,
-                     party_size, reservation_datetime, status,
-                     hold_expires_at, special_requests, confirmation_code,
-                     created_at, updated_at)
-                VALUES (?, ?, ?, ?, NULL, ?, ?, 'hold', ?, '', ?, ?, ?)
-                """,
-                (
-                    hold_id,
-                    f"hold-{hold_id}",
-                    restaurant_id,
-                    best["table_id"],
-                    party_size,
-                    best["datetime"],
-                    hold_expires,
-                    _generate_confirmation_code(),
-                    now_iso,
-                    now_iso,
-                ),
-            )
+            await db.execute("BEGIN EXCLUSIVE")
+            try:
+                for offset in offsets:
+                    slot_dt = base_dt + timedelta(minutes=offset)
+                    slot_str = slot_dt.isoformat()
+                    tables = await check_table_availability(
+                        restaurant_id=restaurant_id,
+                        party_size=party_size,
+                        datetime_str=slot_str,
+                        duration_minutes=duration_minutes,
+                        db=db,
+                    )
+                    for t in tables:
+                        # Avoid duplicates
+                        if not any(s["table_id"] == t["id"] and s["datetime"] == slot_str
+                                   for s in available_slots):
+                            available_slots.append({
+                                "table_id": t["id"],
+                                "capacity": t["capacity"],
+                                "location_tag": t.get("location_tag", ""),
+                                "is_accessible": bool(t.get("is_accessible", 0)),
+                                "datetime": slot_str,
+                            })
+
+                if not available_slots:
+                    # No slots — get waitlist count
+                    cur = await db.execute(
+                        "SELECT COUNT(*) FROM waitlist "
+                        "WHERE restaurant_id = ? AND status = 'waiting'",
+                        (restaurant_id,),
+                    )
+                    (wait_count,) = await cur.fetchone()
+
+                    return {
+                        "success": True,
+                        "data": {
+                            "available": False,
+                            "restaurant_name": restaurant["name"],
+                            "slots": [],
+                            "waitlist_position": wait_count + 1,
+                        },
+                        "error": None,
+                        "error_code": None,
+                    }
+
+                # 4. Create a hold on the best slot (first available)
+                best = available_slots[0]
+                hold_id = str(uuid.uuid4())
+                now_iso = datetime.now(timezone.utc).isoformat()
+                hold_expires = (
+                    datetime.now(timezone.utc) + timedelta(minutes=3)
+                ).isoformat()
+
+                await db.execute(
+                    """
+                    INSERT INTO reservations
+                        (id, idempotency_key, restaurant_id, table_id, guest_id,
+                         party_size, reservation_datetime, status,
+                         hold_expires_at, special_requests, confirmation_code,
+                         created_at, updated_at)
+                    VALUES (?, ?, ?, ?, NULL, ?, ?, 'hold', ?, '', ?, ?, ?)
+                    """,
+                    (
+                        hold_id,
+                        f"hold-{hold_id}",
+                        restaurant_id,
+                        best["table_id"],
+                        party_size,
+                        best["datetime"],
+                        hold_expires,
+                        _generate_confirmation_code(),
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+            except Exception:
+                # get_db() handles rollback on exception, just re-raise
+                raise
 
         return {
             "success": True,

@@ -254,6 +254,9 @@ class LLMClient:
                 is_validation_error = (
                     "validation failed" in error_str.lower()
                     or "failed to call a function" in error_str.lower()
+                    or "tool_use_failed" in error_str.lower()
+                    or "tool call validation" in error_str.lower()
+                    or "400" in error_str
                 )
 
                 if is_rate_limit and attempt < max_retries:

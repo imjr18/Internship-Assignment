@@ -23,7 +23,7 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 # MCP server URL — configurable via env var
-MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://localhost:8100/mcp")
+MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://127.0.0.1:8100/mcp")
 
 # Keep the tool registry for fallback and validation
 VALID_TOOLS = {
@@ -47,6 +47,16 @@ def _next_id() -> int:
     return _request_id
 
 
+# Global HTTPX client to use connection pooling and prevent socket exhaustion
+_http_client = None
+
+def get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(timeout=3.0)
+    return _http_client
+
+
 async def _call_mcp(tool_name: str, arguments: dict, session_id: str) -> dict:
     """Call a tool via the MCP server's JSON-RPC endpoint.
 
@@ -64,10 +74,10 @@ async def _call_mcp(tool_name: str, arguments: dict, session_id: str) -> dict:
         },
     }
 
-    async with httpx.AsyncClient(timeout=3.0) as client:
-        resp = await client.post(MCP_SERVER_URL, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+    client = get_http_client()
+    resp = await client.post(MCP_SERVER_URL, json=payload)
+    resp.raise_for_status()
+    data = resp.json()
 
     # Check for JSON-RPC error
     if "error" in data and data["error"] is not None:
@@ -147,7 +157,7 @@ async def dispatch_tool_call(
             "mcp_dispatch_error",
             session_id=session_id,
             tool=tool_name,
-            error=str(exc),
+            error=repr(exc),
         )
         # Fall back to direct dispatch if MCP server is down
         logger.warning(
