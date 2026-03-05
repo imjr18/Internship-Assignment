@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+venv/
+.venv/
+env/
+
+# Environment variables - NEVER commit these
+.env
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# FAISS index
+*.faiss
+embeddings/restaurant_index.faiss
+embeddings/id_map.json
+
+# Logs
+logs/
+*.log
+
+# Test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Handoff doc (too large, internal only)
+handoff.md
