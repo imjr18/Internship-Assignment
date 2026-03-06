@@ -118,6 +118,9 @@ export function priceSymbols(n: number) {
   return '$'.repeat(Math.max(1, Math.min(4, n)))
 }
 
+// Backward-compatible alias used by older components.
+export const PRICE_SYMBOLS = priceSymbols
+
 /* ── Dietary ── */
 
 export const DIETARY_LABELS: Record<string, { label: string; color: string }> = {

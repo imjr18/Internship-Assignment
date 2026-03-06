@@ -3,7 +3,7 @@
 ### Guiding Principles
 - No LangChain, LlamaIndex, or agent frameworks
 - All agent logic hand-written in Python
-- LLM inference via Groq API (llama-3.3-8b-specdec model)
+- LLM inference via Groq API (default: llama-3.1-8b-instant)
 - Tool calling via JSON schema, not code generation
 - MCP server as a separate FastAPI process
 - SQLite for structured data, FAISS for semantic search
@@ -64,7 +64,7 @@ in the UI, streaming works, booking confirmation is displayed.
 
 ### Technology Stack
 - Python 3.11+
-- Groq API (llama-3.3-8b-specdec) for LLM inference
+- Groq API (default: llama-3.1-8b-instant) for LLM inference
 - FastAPI for MCP server
 - SQLite + aiosqlite for database
 - FAISS + sentence-transformers for semantic search
@@ -75,7 +75,7 @@ in the UI, streaming works, booking confirmation is displayed.
 
 ### Environment Variables Required
 GROQ_API_KEY=
-MCP_SERVER_URL=http://localhost:8000
+MCP_SERVER_URL=http://127.0.0.1:8100/mcp
 MCP_API_KEY=
 DATABASE_PATH=./goodfoods.db
 FAISS_INDEX_PATH=./embeddings/restaurant_index.faiss

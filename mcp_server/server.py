@@ -34,7 +34,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import structlog
 
 from database.seed_data import run_seed
-from agent.tool_dispatcher import dispatch_tool_call
+from agent.tool_dispatcher import dispatch_tool_call_local
 from mcp_server.tool_schemas import MCP_TOOLS_SCHEMA_LIST
 from mcp_server.validators import (
     JsonRpcRequest,
@@ -76,6 +76,11 @@ SERVER_CAPABILITIES = {
 async def lifespan(app: FastAPI):
     """Seed database on startup."""
     await run_seed()
+    try:
+        from tools.recommendations import warmup_search_assets
+        warmup_search_assets()
+    except Exception as exc:
+        logger.warning("startup_warmup_failed", error=str(exc))
     logger.info("mcp_server_started", tools=len(MCP_TOOLS_SCHEMA_LIST))
     yield
     logger.info("mcp_server_stopped")
@@ -171,7 +176,9 @@ async def handle_tools_call(req_id, params: dict) -> dict:
     clean_args = {k: v for k, v in arguments.items() if v is not None}
 
     try:
-        result = await dispatch_tool_call(
+        # Important: execute locally inside MCP server to avoid recursive
+        # HTTP calls back into /mcp.
+        result = await dispatch_tool_call_local(
             tool_name=tool_name,
             arguments=clean_args,
             session_id=session_id,
@@ -274,7 +281,10 @@ async def chat_stream(request: Request):
     Accepts: {"session_id": str, "message": str}
     Returns: Server-Sent Events stream
     """
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json body"}, status_code=400)
     session_id = body.get("session_id", str(uuid.uuid4()))
     message = body.get("message", "").strip()
 
@@ -313,7 +323,7 @@ async def chat_stream(request: Request):
                     )
                     yield f"data: {payload}\n\n"
                 elif etype == "error":
-                    error_msg = event.get("message", "Unknown error")
+                    error_msg = event.get("error", "Unknown error")
                     payload = json.dumps({"error": error_msg})
                     yield f"data: {payload}\n\n"
         except Exception as e:

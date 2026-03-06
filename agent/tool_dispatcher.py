@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import httpx
 import structlog
@@ -24,6 +25,8 @@ logger = structlog.get_logger(__name__)
 
 # MCP server URL — configurable via env var
 MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://127.0.0.1:8100/mcp")
+MCP_TIMEOUT_SECONDS = float(os.environ.get("MCP_TIMEOUT_SECONDS", "8.0"))
+MCP_COOLDOWN_SECONDS = float(os.environ.get("MCP_COOLDOWN_SECONDS", "15"))
 
 # Keep the tool registry for fallback and validation
 VALID_TOOLS = {
@@ -39,6 +42,7 @@ VALID_TOOLS = {
 
 # Request counter for JSON-RPC IDs
 _request_id = 0
+_mcp_unhealthy_until = 0.0
 
 
 def _next_id() -> int:
@@ -53,8 +57,23 @@ _http_client = None
 def get_http_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None:
-        _http_client = httpx.AsyncClient(timeout=3.0)
+        timeout = httpx.Timeout(
+            connect=MCP_TIMEOUT_SECONDS,
+            read=MCP_TIMEOUT_SECONDS,
+            write=MCP_TIMEOUT_SECONDS,
+            pool=MCP_TIMEOUT_SECONDS,
+        )
+        _http_client = httpx.AsyncClient(timeout=timeout)
     return _http_client
+
+
+def _mcp_temporarily_unhealthy() -> bool:
+    return time.monotonic() < _mcp_unhealthy_until
+
+
+def _mark_mcp_unhealthy() -> None:
+    global _mcp_unhealthy_until
+    _mcp_unhealthy_until = time.monotonic() + MCP_COOLDOWN_SECONDS
 
 
 async def _call_mcp(tool_name: str, arguments: dict, session_id: str) -> dict:
@@ -142,30 +161,36 @@ async def dispatch_tool_call(
             "error_code": "INVALID_INPUT",
         }
 
+    via = "direct" if _mcp_temporarily_unhealthy() else "mcp"
     logger.info(
         "dispatching_tool",
         session_id=session_id,
         tool=tool_name,
         arg_keys=list(arguments.keys()),
-        via="mcp",
+        via=via,
     )
 
-    try:
-        result = await _call_mcp(tool_name, arguments, session_id)
-    except Exception as exc:
-        logger.error(
-            "mcp_dispatch_error",
-            session_id=session_id,
-            tool=tool_name,
-            error=repr(exc),
-        )
-        # Fall back to direct dispatch if MCP server is down
-        logger.warning(
-            "mcp_fallback_direct",
-            session_id=session_id,
-            tool=tool_name,
-        )
+    if _mcp_temporarily_unhealthy():
         result = await _direct_dispatch(tool_name, arguments, session_id)
+    else:
+        try:
+            result = await _call_mcp(tool_name, arguments, session_id)
+        except Exception as exc:
+            _mark_mcp_unhealthy()
+            logger.error(
+                "mcp_dispatch_error",
+                session_id=session_id,
+                tool=tool_name,
+                error=repr(exc),
+                cooldown_seconds=MCP_COOLDOWN_SECONDS,
+            )
+            # Fall back to direct dispatch if MCP server is down
+            logger.warning(
+                "mcp_fallback_direct",
+                session_id=session_id,
+                tool=tool_name,
+            )
+            result = await _direct_dispatch(tool_name, arguments, session_id)
 
     logger.info(
         "tool_result",
@@ -222,6 +247,22 @@ async def _direct_dispatch(
             "error": str(exc),
             "error_code": "DB_ERROR",
         }
+
+
+async def dispatch_tool_call_local(
+    tool_name: str,
+    arguments: dict,
+    session_id: str,
+) -> dict:
+    """Execute a tool directly, bypassing MCP network calls."""
+    if tool_name not in VALID_TOOLS:
+        return {
+            "success": False,
+            "data": None,
+            "error": f"Unknown tool: {tool_name}. Valid tools: {', '.join(sorted(VALID_TOOLS))}",
+            "error_code": "INVALID_INPUT",
+        }
+    return await _direct_dispatch(tool_name, arguments, session_id)
 
 
 async def dispatch_all(

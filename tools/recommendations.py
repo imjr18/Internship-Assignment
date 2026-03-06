@@ -11,10 +11,35 @@ import json
 import traceback
 from typing import Any
 
+import structlog
+
 from database.queries import search_restaurants_structured, get_restaurant_by_id
 from embeddings.semantic_search import semantic_search
 from config.settings import get_faiss_index_path
-from embeddings.embed_restaurants import load_index
+from embeddings.embed_restaurants import load_embedding_model, load_index
+
+logger = structlog.get_logger(__name__)
+_cached_index = None
+_cached_id_map: list[str] | None = None
+
+
+def _get_semantic_assets():
+    """Load FAISS index + id map once per process."""
+    global _cached_index, _cached_id_map
+    if _cached_index is None or _cached_id_map is None:
+        path = get_faiss_index_path()
+        _cached_index, _cached_id_map = load_index(path)
+    return _cached_index, _cached_id_map
+
+
+def warmup_search_assets() -> None:
+    """Preload embedding model and FAISS index to reduce first-call latency."""
+    try:
+        load_embedding_model()
+        _get_semantic_assets()
+        logger.info("search_assets_warm")
+    except Exception as exc:
+        logger.warning("search_assets_warm_failed", error=str(exc))
 
 
 def _safe_json_list(raw: Any) -> list[str]:
@@ -197,8 +222,7 @@ async def search_restaurants(params: dict) -> dict:
 
         # 1. Semantic search for candidates
         try:
-            path = get_faiss_index_path()
-            index, id_map = load_index(path)
+            index, id_map = _get_semantic_assets()
             candidate_ids = semantic_search(
                 query, top_k=20, index=index, restaurant_ids=id_map
             )

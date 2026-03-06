@@ -170,6 +170,8 @@ def check_prompt_injection(message: str) -> bool:
         r"you\s+are\s+now",
         r"new\s+persona",
         r"system\s*prompt",
+        r"^\s*#+\s*system\s+override\b",
+        r"^\s*#+\s*new\s+instructions?\b",
         r"reveal\s+your\s+(instructions|prompt|rules)",
         r"pretend\s+(you\s+are|to\s+be)",
         r"act\s+as",

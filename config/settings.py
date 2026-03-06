@@ -25,7 +25,7 @@ def get_groq_api_key() -> str:
 
 
 def get_mcp_server_url() -> str:
-    return os.getenv("MCP_SERVER_URL", "http://localhost:8000")
+    return os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8100/mcp")
 
 
 def get_mcp_api_key() -> str:

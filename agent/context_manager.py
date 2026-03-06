@@ -8,6 +8,7 @@ conversation state machine for the GoodFoods agent.
 from __future__ import annotations
 
 import copy
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,7 +19,9 @@ logger = structlog.get_logger(__name__)
 # Approximate tokens per character for budget estimation
 _CHARS_PER_TOKEN = 4
 # Default max tokens to keep in context
-MAX_CONTEXT_TOKENS = 6000  # conservative for 8192-token model
+MAX_CONTEXT_TOKENS = int(
+    os.getenv("MAX_CONTEXT_TOKENS", "3200")
+)  # leaves headroom for tool schemas + output
 
 
 class ConversationState:
@@ -190,6 +193,7 @@ class ContextManager:
         if tool_calls:
             msg["tool_calls"] = tool_calls
         self.messages.append(msg)
+        self._enforce_budget()
 
     def add_tool_result(self, tool_call_id: str, content: str) -> None:
         self.messages.append(
@@ -199,6 +203,7 @@ class ContextManager:
                 "content": content,
             }
         )
+        self._enforce_budget()
         self._tool_results.append(
             {
                 "tool_call_id": tool_call_id,
@@ -213,6 +218,9 @@ class ContextManager:
 
     def get_turn_count(self) -> int:
         return self._turn_count
+
+    def get_estimated_tokens(self) -> int:
+        return self._estimate_tokens()
 
     # ── Token budget ───────────────────────────────────────
 
@@ -234,6 +242,23 @@ class ContextManager:
             )
 
     # ── Infer state from tool calls ────────────────────────
+
+    def trim_to_target_tokens(self, target_tokens: int) -> int:
+        """Aggressively trim oldest messages until estimated tokens fit target."""
+        removed_count = 0
+        safe_target = max(200, target_tokens)
+        while self._estimate_tokens() > safe_target and len(self.messages) > 2:
+            self.messages.pop(0)
+            removed_count += 1
+        if removed_count:
+            logger.warning(
+                "context_trimmed_for_retry",
+                session_id=self.session_id,
+                removed_messages=removed_count,
+                estimated_tokens=self._estimate_tokens(),
+                target_tokens=safe_target,
+            )
+        return removed_count
 
     def infer_state_from_tool(self, tool_name: str, success: bool) -> None:
         """Automatically transition state after a tool call."""

@@ -27,6 +27,24 @@ function makeBase(): AppState {
   }
 }
 
+function mapStreamError(message: string): string {
+  const lower = message.toLowerCase()
+  const genericRetry = "I'm having trouble right now. Please try again in a moment."
+  if (lower.includes('tokens per day') || lower.includes('tpd')) {
+    return genericRetry
+  }
+  if (lower.includes('request too large') || lower.includes('tokens per minute')) {
+    return genericRetry
+  }
+  if (lower.includes('rate limit') || lower.includes('429')) {
+    return genericRetry
+  }
+  if (lower.includes('timed out') || lower.includes('timeout')) {
+    return genericRetry
+  }
+  return genericRetry
+}
+
 /* ─────────────────────────────────────────
    Prototype state switcher
    (reviewer navigation — minimal, unobtrusive)
@@ -220,13 +238,15 @@ export default function Page() {
           }
 
           if (token.type === 'error') {
-            console.error('[handleSend] stream error:', token.message)
+            if (process.env.NODE_ENV !== 'production') {
+              console.warn('[handleSend] stream warning:', token.message)
+            }
             streamError = true
             setAppState((prev) => ({
               ...prev,
               messages: prev.messages.map((m) =>
                 m.id === sageId
-                  ? { ...m, content: "I'm having trouble connecting right now. Please try again in a moment." }
+                  ? { ...m, content: mapStreamError(token.message) }
                   : m
               ),
             }))
@@ -234,13 +254,15 @@ export default function Page() {
         }
       )
     } catch (err) {
-      console.error('[handleSend] streamChat threw:', err)
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn('[handleSend] streamChat warning:', err)
+      }
       if (!streamError) {
         setAppState((prev) => ({
           ...prev,
           messages: prev.messages.map((m) =>
             m.id === sageId
-              ? { ...m, content: "I'm having trouble connecting right now. Please try again in a moment." }
+              ? { ...m, content: 'I hit a connection issue. Please try again in a moment.' }
               : m
           ),
         }))

@@ -14,7 +14,6 @@ MODEL: llama-3.1-8b-instant
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from typing import AsyncGenerator
@@ -25,6 +24,8 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 MODEL = "llama-3.1-8b-instant"
+DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "450"))
+DEFAULT_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))
 
 
 class LLMClient:
@@ -32,7 +33,7 @@ class LLMClient:
 
     def __init__(self):
         self.client = AsyncGroq(api_key=os.environ["GROQ_API_KEY"])
-        self.model = MODEL
+        self.model = os.getenv("GROQ_MODEL", MODEL)
 
     async def complete(
         self,
@@ -69,7 +70,8 @@ class LLMClient:
                 messages=messages,
                 tools=tools if tools else None,
                 tool_choice=tool_choice if tools else None,
-                max_tokens=1000,
+                max_tokens=DEFAULT_MAX_TOKENS,
+                temperature=DEFAULT_TEMPERATURE,
             )
 
             message = response.choices[0].message
@@ -135,7 +137,8 @@ class LLMClient:
                     response = await self.client.chat.completions.create(
                         model=self.model,
                         messages=messages,
-                        max_tokens=1000,
+                        max_tokens=DEFAULT_MAX_TOKENS,
+                        temperature=DEFAULT_TEMPERATURE,
                     )
                     message = response.choices[0].message
                     return {
@@ -184,8 +187,7 @@ class LLMClient:
         # It produces malformed <function=...> syntax. Always use "auto".
         tool_choice = "auto"
 
-        max_retries = 3
-        retry_delays = [5, 15, 30]  # seconds
+        max_retries = 2
 
         for attempt in range(max_retries + 1):
             accumulated_tool_calls: list[dict] = []
@@ -197,7 +199,8 @@ class LLMClient:
                     messages=messages,
                     tools=tools if tools else None,
                     tool_choice=tool_choice if tools else None,
-                    max_tokens=1000,
+                    max_tokens=DEFAULT_MAX_TOKENS,
+                    temperature=DEFAULT_TEMPERATURE,
                     stream=True,
                 )
 
@@ -250,30 +253,50 @@ class LLMClient:
 
             except Exception as e:
                 error_str = str(e)
+                lowered_error = error_str.lower()
                 is_rate_limit = "429" in error_str or "rate_limit" in error_str
+                is_request_too_large = (
+                    "request too large" in lowered_error
+                    or (
+                        "tokens per minute" in lowered_error
+                        and "requested" in lowered_error
+                        and "limit" in lowered_error
+                    )
+                )
+                is_daily_quota = (
+                    "tokens per day" in lowered_error
+                    or "tpd" in lowered_error
+                )
                 is_validation_error = (
                     "validation failed" in error_str.lower()
                     or "failed to call a function" in error_str.lower()
                     or "tool_use_failed" in error_str.lower()
                     or "tool call validation" in error_str.lower()
-                    or "400" in error_str
                 )
 
-                if is_rate_limit and attempt < max_retries:
-                    delay = retry_delays[attempt]
+                if is_request_too_large:
                     logger.warning(
-                        "rate_limit_retry",
+                        "llm_context_too_large",
                         session_id=session_id,
-                        attempt=attempt + 1,
-                        delay=delay,
                     )
-                    # Notify frontend about the wait
-                    yield {
-                        "type": "token",
-                        "content": f"\n\n*Rate limit reached. Retrying in {delay}s...*\n\n",
-                    }
-                    await asyncio.sleep(delay)
-                    continue  # Retry
+                    yield {"type": "error", "error": error_str}
+                    return
+
+                if is_daily_quota:
+                    logger.warning(
+                        "llm_daily_quota_exceeded",
+                        session_id=session_id,
+                    )
+                    yield {"type": "error", "error": error_str}
+                    return
+
+                if is_rate_limit:
+                    logger.warning(
+                        "rate_limit_no_retry",
+                        session_id=session_id,
+                    )
+                    yield {"type": "error", "error": error_str}
+                    return
 
                 if is_validation_error and attempt < max_retries:
                     logger.warning(
@@ -289,7 +312,8 @@ class LLMClient:
                             model=self.model,
                             messages=messages,
                             stream=True,
-                            max_tokens=1024,
+                            max_tokens=DEFAULT_MAX_TOKENS,
+                            temperature=DEFAULT_TEMPERATURE,
                         )
                         async for chunk in fallback_stream:
                             if chunk.choices:

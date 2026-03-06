@@ -15,7 +15,24 @@ from database.connection import get_db
 from database.queries import (
     get_restaurant_by_id,
     check_table_availability,
+    get_or_create_guest,
 )
+
+_hold_guest_id: str | None = None
+
+
+async def _get_hold_guest_id() -> str:
+    """Get a stable internal guest id used for temporary hold rows."""
+    global _hold_guest_id
+    if _hold_guest_id:
+        return _hold_guest_id
+    hold_guest = await get_or_create_guest(
+        email="hold-system@goodfoods.local",
+        name="GoodFoods Hold",
+        phone="",
+    )
+    _hold_guest_id = hold_guest["id"]
+    return _hold_guest_id
 
 
 def _safe_json(raw: Any) -> Any:
@@ -131,6 +148,8 @@ async def check_availability(params: dict) -> dict:
 
         from database.queries import _generate_confirmation_code
 
+        hold_guest_id = await _get_hold_guest_id()
+
         async with get_db() as db:
             await db.execute("BEGIN EXCLUSIVE")
             try:
@@ -184,7 +203,6 @@ async def check_availability(params: dict) -> dict:
                 hold_expires = (
                     datetime.now(timezone.utc) + timedelta(minutes=3)
                 ).isoformat()
-
                 await db.execute(
                     """
                     INSERT INTO reservations
@@ -192,13 +210,14 @@ async def check_availability(params: dict) -> dict:
                          party_size, reservation_datetime, status,
                          hold_expires_at, special_requests, confirmation_code,
                          created_at, updated_at)
-                    VALUES (?, ?, ?, ?, NULL, ?, ?, 'hold', ?, '', ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'hold', ?, '', ?, ?, ?)
                     """,
                     (
                         hold_id,
                         f"hold-{hold_id}",
                         restaurant_id,
                         best["table_id"],
+                        hold_guest_id,
                         party_size,
                         best["datetime"],
                         hold_expires,
