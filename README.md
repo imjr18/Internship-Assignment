@@ -1,113 +1,78 @@
 # GoodFoods AI Reservation Concierge
 
-End-to-end restaurant reservation assistant with:
-- Next.js frontend (`frontend_next/`)
-- FastAPI backend + MCP server (`mcp_server/`)
-- Hand-written Python orchestrator (`agent/`)
-- Deterministic booking tools (`tools/`)
-- SQLite + FAISS data stack (`database/`, `embeddings/`)
-- Extensive reliability and edge-case tests (`tests/`)
+This repository contains an end-to-end conversational reservation system built for the GoodFoods AI Agent Challenge.
+It combines business strategy deliverables with a working product implementation, so an evaluator can review both:
+- the thinking (use case, ROI, expansion, positioning)
+- the engineering (agent loop, tool calling, backend/frontend behavior, test coverage)
 
-## Evaluator Quick Path
+## What Is Implemented
 
-Review these artifacts in this order:
+- A Next.js frontend experience for browsing, chat, and confirmation views (`frontend_next/`)
+- A FastAPI backend and MCP-style tool endpoint (`mcp_server/`)
+- A custom Python orchestration loop with explicit state handling (`agent/`)
+- Deterministic operational tools for search/availability/reservation workflows (`tools/`)
+- SQLite persistence + FAISS-based semantic retrieval (`database/`, `embeddings/`)
+- Automated reliability and regression test coverage (`tests/`)
 
-1. Business strategy and use-case design  
+## How To Evaluate This Submission
+
+Use this sequence for the quickest complete review:
+
+1. Understand business framing and value:
    [`docs/GoodFoods_Business_Strategy_Use_Case.pdf`](docs/GoodFoods_Business_Strategy_Use_Case.pdf)
-2. Technical design and prompt-engineering rationale  
+2. Understand technical design and prompt approach:
    [`docs/GoodFoods_Technical_Design_Engineering.pdf`](docs/GoodFoods_Technical_Design_Engineering.pdf)
-3. Exact setup/run flow for evaluation  
+3. Run the project exactly as intended:
    [`docs/evaluator_setup.md`](docs/evaluator_setup.md)
-4. Structured conversation screenshot evidence  
+4. Review scenario evidence:
    [`docs/assets/journey_sequences/INDEX.md`](docs/assets/journey_sequences/INDEX.md)
+5. Watch end-to-end demonstration:
+   [`docs/assets/Videos/Demo Video.mp4`](docs/assets/Videos/Demo%20Video.mp4)
 
-## Architecture Snapshot
+## System At A Glance
 
-- `frontend_next` streams chat to backend (`POST /chat`) and polls booking context (`GET /booking-state/{session_id}`).
-- `mcp_server.server` exposes:
-  - JSON-RPC MCP endpoint: `POST /mcp` (`initialize`, `tools/list`, `tools/call`)
-  - Frontend endpoints: `POST /chat`, `GET /restaurants`, `GET /booking-state/{session_id}`, `GET /health`
-- `agent.orchestrator` runs the multi-turn control loop and calls tools via MCP with direct-call fallback.
-- Tool truth is grounded in deterministic Python functions:
-  - `search_restaurants`
-  - `check_availability`
-  - `create_reservation`
-  - `modify_reservation`
-  - `cancel_reservation`
-  - `get_guest_history`
-  - `add_to_waitlist`
-  - `escalate_to_human`
+High-level runtime flow:
+- Frontend sends chat input to backend (`POST /chat`)
+- Agent orchestrator interprets intent and chooses tool calls
+- Backend tools execute deterministic actions (search, hold, create, modify, cancel)
+- Frontend reads live session state (`GET /booking-state/{session_id}`)
 
-## Repository Map
+Backend endpoints exposed:
+- `POST /mcp`
+- `POST /chat`
+- `GET /restaurants`
+- `GET /booking-state/{session_id}`
+- `GET /health`
 
-| Area | Path | Purpose |
-|---|---|---|
-| Business deliverable | `docs/GoodFoods_Business_Strategy_Use_Case.pdf` | Submission-grade strategy and use-case writeup |
-| Technical deliverable | `docs/GoodFoods_Technical_Design_Engineering.pdf` | Submission-grade architecture and prompt-engineering writeup |
-| Evaluator runbook | `docs/evaluator_setup.md` | Setup, run, validation, troubleshooting |
-| Conversation evidence | `docs/assets/journey_sequences/` | Full turn-by-turn screenshots for standard and edge journeys |
-| Backend API + MCP | `mcp_server/` | FastAPI app and JSON-RPC dispatch |
-| Agent orchestration | `agent/` | Context, prompting, LLM client, tool dispatch |
-| Deterministic tools | `tools/` | Reservation/search/availability/waitlist/escalation logic |
-| Persistence layer | `database/` | SQLite schema, queries, seed logic (75 restaurants) |
-| Semantic search | `embeddings/` | Sentence-transformers + FAISS index logic |
-| Primary frontend | `frontend_next/` | Next.js evaluator interface |
-| Optional alt UI | `frontend/` | Streamlit interface |
-| Automated tests | `tests/` | Unit, integration, regression, brutal edge-case coverage |
+## Repository Orientation
 
-## Setup and Run (Fast Path)
+Key directories and what they are for:
+- A Next.js frontend (`frontend_next/`)
+- A FastAPI backend + MCP endpoint (`mcp_server/`)
+- A custom Python orchestration loop (`agent/`)
+- Deterministic booking/search tools (`tools/`)
+- SQLite + FAISS data stack (`database/`, `embeddings/`)
+- Automated test coverage (`tests/`)
 
-From repo root:
+## Quick Run Pointer
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-cd frontend_next
-npm install
-cd ..
-```
+For environment setup, startup commands, and troubleshooting, follow:
+- [`docs/evaluator_setup.md`](docs/evaluator_setup.md)
 
-Create `.env` from `.env.example`, then run backend:
+In short:
+- start backend on `127.0.0.1:8100`
+- start frontend on `localhost:3000`
+- verify health on `GET /health`
 
-```powershell
-python -m uvicorn mcp_server.server:app --host 127.0.0.1 --port 8100
-```
+## Detailed Materials (Source Of Truth)
 
-In a second terminal:
-
-```powershell
-cd frontend_next
-npm run dev
-```
-
-Open:
-- Frontend: `http://localhost:3000`
-- Backend health: `http://127.0.0.1:8100/health`
-
-## Verified Validation Commands
-
-Run from repo root:
-
-```powershell
-pytest -q
-```
-
-Run from `frontend_next/`:
-
-```powershell
-npm run build
-```
-
-Current local result (2026-03-06): backend tests pass (`153 passed, 17 skipped`), frontend production build succeeds.
-
-## Screenshot and Demo Assets
-
-- Primary evidence index: [`docs/assets/journey_sequences/INDEX.md`](docs/assets/journey_sequences/INDEX.md)
-
-## Assumptions and Limitations
-
-- Live conversational quality depends on Groq quota/rate limits (`GROQ_API_KEY`).
-- External POS/CRM integrations are not included; this is a local simulation stack.
-- `tests/test_recommendations.py` and `tests/test_validators.py` are placeholders and do not currently add assertions.
-- `frontend/v0/` and some handoff files are legacy artifacts; evaluator flow should use `frontend_next/`, `docs/evaluator_setup.md`, and the PDF deliverables.
+- Business strategy, metrics, stakeholders, expansion:  
+  [`docs/GoodFoods_Business_Strategy_Use_Case.pdf`](docs/GoodFoods_Business_Strategy_Use_Case.pdf)
+- Technical architecture, prompt engineering, implementation details:  
+  [`docs/GoodFoods_Technical_Design_Engineering.pdf`](docs/GoodFoods_Technical_Design_Engineering.pdf)
+- Setup, execution, and validation instructions:  
+  [`docs/evaluator_setup.md`](docs/evaluator_setup.md)
+- Structured scenario and edge-case screenshots:  
+  [`docs/assets/journey_sequences/INDEX.md`](docs/assets/journey_sequences/INDEX.md)
+- Demo recording:  
+  [`docs/assets/Videos/Demo Video.mp4`](docs/assets/Videos/Demo%20Video.mp4)
