@@ -13,7 +13,11 @@ from typing import Any
 
 import structlog
 
-from database.queries import search_restaurants_structured, get_restaurant_by_id
+from database.queries import (
+    search_restaurants_structured,
+    get_restaurant_by_id,
+    get_all_restaurants,
+)
 from embeddings.semantic_search import semantic_search
 from config.settings import get_faiss_index_path
 from embeddings.embed_restaurants import load_embedding_model, load_index
@@ -53,6 +57,36 @@ def _safe_json_list(raw: Any) -> list[str]:
         return val if isinstance(val, list) else []
     except (json.JSONDecodeError, TypeError):
         return []
+
+
+def _normalize_text(raw: str) -> str:
+    """Lowercase and strip punctuation for tolerant text matching."""
+    chars: list[str] = []
+    for ch in raw.lower():
+        if ch.isalnum() or ch.isspace():
+            chars.append(ch)
+        else:
+            chars.append(" ")
+    normalized = "".join(chars)
+    return " ".join(normalized.split())
+
+
+def _find_explicit_name_matches(
+    query: str,
+    restaurants: list[dict],
+) -> list[dict]:
+    """Find restaurants whose full name appears in the user's query."""
+    normalized_query = _normalize_text(query)
+    matches: list[dict] = []
+    for restaurant in restaurants:
+        name = str(restaurant.get("name", ""))
+        normalized_name = _normalize_text(name)
+        # Skip tiny/ambiguous names.
+        if len(normalized_name) < 5:
+            continue
+        if normalized_name and normalized_name in normalized_query:
+            matches.append(restaurant)
+    return matches
 
 
 def _compute_scores(
@@ -204,7 +238,7 @@ async def search_restaurants(params: dict) -> dict:
     """
     try:
         query: str = params.get("query", "")
-        party_size: int = params.get("party_size", 2)
+        raw_party_size = params.get("party_size")
         date: str = params.get("date", "")
         time: str = params.get("time", "")
         dietary_requirements: list[str] = params.get("dietary_requirements", [])
@@ -220,6 +254,30 @@ async def search_restaurants(params: dict) -> dict:
                 "error_code": "INVALID_INPUT",
             }
 
+        if raw_party_size is None:
+            return {
+                "success": False,
+                "data": None,
+                "error": "party_size is required",
+                "error_code": "INVALID_INPUT",
+            }
+        try:
+            party_size = int(raw_party_size)
+        except (TypeError, ValueError):
+            return {
+                "success": False,
+                "data": None,
+                "error": "party_size must be a positive integer",
+                "error_code": "INVALID_INPUT",
+            }
+        if party_size <= 0:
+            return {
+                "success": False,
+                "data": None,
+                "error": "party_size must be at least 1",
+                "error_code": "INVALID_INPUT",
+            }
+
         # 1. Semantic search for candidates
         try:
             index, id_map = _get_semantic_assets()
@@ -228,6 +286,12 @@ async def search_restaurants(params: dict) -> dict:
             )
         except Exception:
             candidate_ids = []
+
+        # Detect explicit restaurant-name mentions from free text.
+        all_restaurants = await get_all_restaurants()
+        explicit_matches = _find_explicit_name_matches(query, all_restaurants)
+        explicit_ids = [r["id"] for r in explicit_matches]
+        explicit_set = set(explicit_ids)
 
         # 2. Structured filter
         structured = await search_restaurants_structured(
@@ -247,6 +311,13 @@ async def search_restaurants(params: dict) -> dict:
             merged_ids = candidate_ids
         else:
             merged_ids = list(structured_ids)
+
+        # If the guest explicitly named a restaurant, prioritize it first
+        # even when older context preferences would otherwise down-rank it.
+        if explicit_ids:
+            merged_ids = explicit_ids + [rid for rid in merged_ids if rid not in explicit_set]
+            for match in explicit_matches:
+                structured_map.setdefault(match["id"], match)
 
         if not merged_ids:
             return {
@@ -273,6 +344,13 @@ async def search_restaurants(params: dict) -> dict:
                 cuisine_preference=cuisine_preference,
                 party_size=party_size,
             )
+            is_explicit_name_match = rid in explicit_set
+            if is_explicit_name_match:
+                score = max(score, 0.99)
+                explanation_parts = [
+                    "exact restaurant name match",
+                    *explanation_parts,
+                ]
             scored.append({
                 "restaurant_id": rest["id"],
                 "name": rest["name"],
@@ -285,10 +363,13 @@ async def search_restaurants(params: dict) -> dict:
                 ),
                 "description": rest.get("description", ""),
                 "score": score,
+                "exact_name_match": is_explicit_name_match,
                 "explanation": "Recommended because: " + ", ".join(explanation_parts),
             })
 
-        scored.sort(key=lambda x: x["score"], reverse=True)
+        scored.sort(
+            key=lambda x: (not bool(x.get("exact_name_match")), -float(x["score"]))
+        )
 
         # 4. Diversity penalty
         scored = _apply_diversity(scored)
@@ -303,9 +384,15 @@ async def search_restaurants(params: dict) -> dict:
         }
 
     except Exception as exc:
+        logger.error(
+            "search_restaurants_unhandled_error",
+            error=str(exc),
+            traceback=traceback.format_exc(),
+        )
+        # Degrade gracefully instead of hard-failing the conversation.
         return {
-            "success": False,
-            "data": None,
-            "error": str(exc),
-            "error_code": "DB_ERROR",
+            "success": True,
+            "data": {"results": [], "total": 0},
+            "error": None,
+            "error_code": None,
         }

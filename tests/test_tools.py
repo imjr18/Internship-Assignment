@@ -369,6 +369,44 @@ async def test_modify_reservation_not_found():
     assert resp["error_code"] == "NOT_FOUND"
 
 
+@pytest.mark.asyncio
+async def test_modify_reservation_requires_identifier():
+    resp = await modify_reservation({
+        "changes": {"new_special_requests": "window seat"},
+    })
+    assert_tool_response(resp)
+    assert resp["success"] is False
+    assert resp["error_code"] == "INVALID_INPUT"
+
+
+@pytest.mark.asyncio
+async def test_modify_reservation_rejects_no_effective_changes():
+    cr = await create_reservation({
+        "restaurant_id": _REST_IDS[0],
+        "table_id": _TABLE_IDS[_REST_IDS[0]][0],
+        "guest_name": "No Op",
+        "guest_email": "noop@test.com",
+        "guest_phone": "+1-555-818-1818",
+        "party_size": 2,
+        "reservation_datetime": "2026-04-07T19:00:00",
+        "special_requests": "quiet corner",
+        "idempotency_key": "idem-modify-no-op",
+    })
+    rid = cr["data"]["reservation"]["id"]
+
+    resp = await modify_reservation({
+        "reservation_id": rid,
+        "changes": {
+            "new_datetime": "2026-04-07T19:00:00",
+            "new_party_size": 2,
+            "new_special_requests": "quiet corner",
+        },
+    })
+    assert_tool_response(resp)
+    assert resp["success"] is False
+    assert resp["error_code"] == "INVALID_INPUT"
+
+
 # ===================================================================
 # cancel_reservation
 # ===================================================================

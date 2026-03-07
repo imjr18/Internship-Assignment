@@ -76,8 +76,9 @@ STATE_HINTS: dict[str, str] = {
         "A reservation is being created. Wait for the result."
     ),
     ConversationState.MODIFYING: (
-        "The guest wants to change a reservation. Identify "
-        "what needs to change and call modify_reservation."
+        "The guest wants to change a reservation. Ask for the specific "
+        "new value first (time/date, party size, or special request). "
+        "Do not call modify_reservation until at least one new value is explicit."
     ),
     ConversationState.CANCELLING: (
         "The guest wants to cancel. Confirm the reservation "
@@ -175,6 +176,17 @@ class ContextManager:
             "hold_id": "Hold ID",
         }
         for key, val in self._booking.items():
+            # Keep only user-facing fields in prompt context.
+            # Internal metadata (e.g. *_explicit flags, cached search results)
+            # should not leak into model-visible booking summary.
+            if key not in field_labels:
+                continue
+            if val is None:
+                continue
+            if isinstance(val, str) and not val.strip():
+                continue
+            if isinstance(val, (list, dict)) and not val:
+                continue
             label = field_labels.get(key, key)
             parts.append(f"- {label}: {val}")
         return "\n".join(parts)

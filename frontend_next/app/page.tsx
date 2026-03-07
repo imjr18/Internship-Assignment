@@ -3,18 +3,13 @@
 import { useState, useCallback, useRef } from 'react'
 import { Navbar } from '@/components/goodfoods/Navbar'
 import { ChatArea } from '@/components/goodfoods/ChatArea'
-import { ChatInput } from '@/components/goodfoods/ChatInput'
 import { ContextPanel } from '@/components/goodfoods/ContextPanel'
 import { ConfirmedLeftColumn, ConfirmedRightPanel } from '@/components/goodfoods/ConfirmedView'
 import { BrowseScreen } from '@/components/goodfoods/BrowseScreen'
-import { buildState, INITIAL_BOOKING_FIELDS } from '@/lib/mock-data'
+import { INITIAL_BOOKING_FIELDS } from '@/lib/mock-data'
 import { streamChat, fetchBookingState } from '@/lib/api'
 import { getSessionId, resetSession } from '@/lib/session'
-import type { AppState, UIState, Restaurant } from '@/lib/types'
-
-/* ─────────────────────────────────────────
-   Initial app state factory
-───────────────────────────────────────── */
+import type { AppState, Restaurant } from '@/lib/types'
 
 function makeBase(): AppState {
   return {
@@ -30,117 +25,82 @@ function makeBase(): AppState {
 function mapStreamError(message: string): string {
   const lower = message.toLowerCase()
   const genericRetry = "I'm having trouble right now. Please try again in a moment."
-  if (lower.includes('tokens per day') || lower.includes('tpd')) {
-    return genericRetry
-  }
-  if (lower.includes('request too large') || lower.includes('tokens per minute')) {
-    return genericRetry
-  }
-  if (lower.includes('rate limit') || lower.includes('429')) {
-    return genericRetry
-  }
-  if (lower.includes('timed out') || lower.includes('timeout')) {
-    return genericRetry
-  }
+  if (lower.includes('tokens per day') || lower.includes('tpd')) return genericRetry
+  if (lower.includes('request too large') || lower.includes('tokens per minute')) return genericRetry
+  if (lower.includes('rate limit') || lower.includes('429')) return genericRetry
+  if (lower.includes('timed out') || lower.includes('timeout')) return genericRetry
   return genericRetry
 }
 
-/* ─────────────────────────────────────────
-   Prototype state switcher
-   (reviewer navigation — minimal, unobtrusive)
-───────────────────────────────────────── */
-
-const STATES: { id: UIState; label: string }[] = [
-  { id: 1, label: 'Landing' },
-  { id: 2, label: 'Conversation' },
-  { id: 3, label: 'Confirmed' },
-  { id: 4, label: 'Browse' },
-]
-
-function StateSwitcher({ active, onChange }: { active: UIState; onChange: (s: UIState) => void }) {
-  return (
-    <div
-      className="fixed flex items-center gap-1.5 z-[200]"
-      style={{
-        bottom: '24px',
-        left: '50%',
-        transform: 'translateX(-50%)',
-        background: 'rgba(8,8,8,0.92)',
-        border: '1px solid #1e1e1e',
-        borderRadius: '100px',
-        padding: '4px 8px',
-        backdropFilter: 'blur(8px)',
-      }}
-      aria-label="Prototype state navigator"
-    >
-      {STATES.map((s) => (
-        <button
-          key={s.id}
-          onClick={() => onChange(s.id)}
-          style={{
-            height: '22px',
-            padding: '0 10px',
-            borderRadius: '100px',
-            fontSize: '10px',
-            cursor: 'pointer',
-            background: active === s.id ? 'rgba(201,169,110,0.12)' : 'transparent',
-            color: active === s.id ? '#504a44' : '#2d2d2d',
-            border: `1px solid ${active === s.id ? '#2d2d2d' : 'transparent'}`,
-            fontFamily: 'inherit',
-            transition: 'all 150ms',
-          }}
-          onMouseEnter={(e) => { if (active !== s.id) e.currentTarget.style.color = '#504a44' }}
-          onMouseLeave={(e) => { if (active !== s.id) e.currentTarget.style.color = '#2d2d2d' }}
-        >
-          {s.label}
-        </button>
-      ))}
-    </div>
-  )
+function parseDateAndTime(reservationDatetime: unknown): { date: string | null; time: string | null } {
+  if (typeof reservationDatetime !== 'string' || !reservationDatetime.includes('T')) {
+    return { date: null, time: null }
+  }
+  const [datePart, timePart] = reservationDatetime.split('T')
+  const time = timePart ? timePart.slice(0, 5) : null
+  return {
+    date: datePart || null,
+    time: time || null,
+  }
 }
 
-/* ─────────────────────────────────────────
-   Main Page
-───────────────────────────────────────── */
+function extractConfirmationCode(text: string): string | null {
+  const patterns = [
+    /confirmation(?:\s+code)?\s*[:#-]?\s*([A-Z0-9-]{6,})/i,
+    /\bcode\s*[:#-]?\s*([A-Z0-9-]{6,})\b/i,
+  ]
+  for (const pattern of patterns) {
+    const match = text.match(pattern)
+    if (match?.[1]) return match[1].toUpperCase()
+  }
+  return null
+}
 
 export default function Page() {
-  const [uiState, setUiState] = useState<UIState>(1)
-  const [appState, setAppState] = useState<AppState>(() => ({
-    ...makeBase(),
-    ...buildState(1),
-  }))
+  const [appState, setAppState] = useState<AppState>(() => makeBase())
   const [prefill, setPrefill] = useState<string | undefined>(undefined)
+  const [bookView, setBookView] = useState<'chat' | 'confirmed'>('chat')
 
-  /* Session ID — stable per browser tab */
   const sessionIdRef = useRef<string>('')
+  const hasSentMessageRef = useRef<boolean>(false)
   if (!sessionIdRef.current && typeof window !== 'undefined') {
     sessionIdRef.current = getSessionId()
   }
 
-  /* Switch prototype state */
-  function handleStateChange(s: UIState) {
-    setUiState(s)
+  const handleHome = useCallback(() => {
+    sessionIdRef.current = resetSession()
+    hasSentMessageRef.current = false
     setPrefill(undefined)
-    setAppState({ ...makeBase(), ...buildState(s) })
-  }
-
-  /* Navigate between book / browse */
-  const handleNavigate = useCallback((screen: 'book' | 'browse') => {
-    const next: UIState = screen === 'browse' ? 4 : 1
-    setUiState(next)
-    setAppState({ ...makeBase(), ...buildState(next) })
+    setBookView('chat')
+    setAppState(makeBase())
   }, [])
 
-  /* Guest sends a message — streams response from Python backend */
+  const handleBrowse = useCallback(() => {
+    setAppState((prev) => ({ ...prev, screen: 'browse' }))
+  }, [])
+
+  const handleChatView = useCallback(() => {
+    setBookView('chat')
+    setAppState((prev) => ({ ...prev, screen: 'book' }))
+  }, [])
+
+  const handleConfirmedView = useCallback(() => {
+    setBookView('confirmed')
+    setAppState((prev) => ({ ...prev, screen: 'book' }))
+  }, [])
+
   const handleSend = useCallback(async (message: string) => {
+    // Ensure first message starts a fresh backend session so hidden stale
+    // constraints from an older page load do not leak into this chat.
+    if (!hasSentMessageRef.current) {
+      sessionIdRef.current = resetSession()
+      hasSentMessageRef.current = true
+    }
+
     setPrefill(undefined)
     const msgId = Math.random().toString(36).slice(2)
     const sageId = Math.random().toString(36).slice(2)
 
-    console.log('[handleSend] Starting:', message.slice(0, 50), 'session:', sessionIdRef.current)
-
-    // Add user message + empty sage placeholder immediately
-    // (no separate composing indicator — sage bubble stays empty until first token)
     setAppState((prev) => ({
       ...prev,
       messages: [
@@ -150,109 +110,130 @@ export default function Page() {
       ],
     }))
 
-    // Accumulate text in a closure variable
     let sageText = ''
     let streamError = false
 
     try {
-      await streamChat(
-        sessionIdRef.current,
-        message,
-        (token) => {
-          if (token.type === 'text') {
-            sageText += token.content
-            const snapshot = sageText  // capture for closure
+      await streamChat(sessionIdRef.current, message, (token) => {
+        if (token.type === 'text') {
+          sageText += token.content
+          const snapshot = sageText
+          const inferredCode = extractConfirmationCode(snapshot)
 
-            // Always use map — sage message is guaranteed to exist from the start
+          setAppState((prev) => ({
+            ...prev,
+            messages: prev.messages.map((m) => (
+              m.id === sageId ? { ...m, content: snapshot } : m
+            )),
+            bookingState: inferredCode ? 'COMPLETED' : prev.bookingState,
+            confirmationCode: inferredCode ?? prev.confirmationCode,
+          }))
+        }
+
+        if (token.type === 'booking') {
+          const raw = token.data as Record<string, unknown>
+          const payload = (raw.data && typeof raw.data === 'object'
+            ? raw.data
+            : raw) as Record<string, unknown>
+          const reservation = (payload.reservation && typeof payload.reservation === 'object'
+            ? payload.reservation
+            : {}) as Record<string, unknown>
+
+          const confirmationCode = (reservation.confirmation_code ??
+            payload.confirmation_code ??
+            payload.confirmationCode) as string | undefined
+
+          const reservationDateTime = reservation.reservation_datetime ?? payload.reservation_datetime
+          const parsed = parseDateAndTime(reservationDateTime)
+
+          setAppState((prev) => ({
+            ...prev,
+            bookingState: confirmationCode ? 'COMPLETED' : prev.bookingState,
+            confirmationCode: confirmationCode ?? prev.confirmationCode,
+            bookingFields: {
+              ...prev.bookingFields,
+              restaurant:
+                (payload.restaurant_name as string) ??
+                (reservation.restaurant_name as string) ??
+                prev.bookingFields.restaurant,
+              date:
+                parsed.date ??
+                (payload.date as string) ??
+                prev.bookingFields.date,
+              time:
+                parsed.time ??
+                (payload.time as string) ??
+                prev.bookingFields.time,
+              partySize:
+                String(
+                  reservation.party_size ??
+                  payload.party_size ??
+                  prev.bookingFields.partySize ??
+                  ''
+                ),
+            },
+          }))
+        }
+
+        if (token.type === 'escalated') {
+          setAppState((prev) => ({
+            ...prev,
+            bookingState: 'ESCALATED',
+          }))
+        }
+
+        if (token.type === 'done') {
+          const inferredCode = extractConfirmationCode(sageText)
+          fetchBookingState(sessionIdRef.current).then((state) => {
+            const stateCode =
+              state && typeof state.confirmation_code === 'string' && state.confirmation_code
+                ? state.confirmation_code
+                : null
+            const finalCode = stateCode ?? inferredCode
             setAppState((prev) => ({
               ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === sageId
-                  ? { ...m, content: snapshot }
-                  : m
-              ),
-            }))
-          }
-
-          if (token.type === 'booking') {
-            const data = token.data as Record<string, unknown>
-            const dataObj = (data.data ?? data) as Record<string, unknown>
-            const code = (dataObj.confirmation_code ??
-              dataObj.confirmationCode) as string | undefined
-
-            setAppState((prev) => ({
-              ...prev,
-              bookingState: 'COMPLETED',
-              confirmationCode: code ?? null,
+              bookingState: finalCode ? 'COMPLETED' : prev.bookingState,
+              confirmationCode: finalCode ?? prev.confirmationCode,
               bookingFields: {
                 ...prev.bookingFields,
                 restaurant:
-                  (dataObj.restaurant_name as string) ??
+                  (state?.restaurant_name as string) ??
                   prev.bookingFields.restaurant,
+                partySize:
+                  state?.party_size
+                    ? String(state.party_size)
+                    : prev.bookingFields.partySize,
                 date:
-                  (dataObj.date as string) ??
+                  (state?.date as string) ??
                   prev.bookingFields.date,
                 time:
-                  (dataObj.time as string) ??
+                  (state?.time as string) ??
                   prev.bookingFields.time,
-                partySize:
-                  String(dataObj.party_size ?? prev.bookingFields.partySize ?? ''),
               },
             }))
-          }
-
-          if (token.type === 'escalated') {
+          }).catch(() => {
+            if (!inferredCode) return
             setAppState((prev) => ({
               ...prev,
-              bookingState: 'ESCALATED',
+              bookingState: 'COMPLETED',
+              confirmationCode: inferredCode,
             }))
-          }
-
-          if (token.type === 'done') {
-            console.log('[handleSend] DONE — sageText:', sageText.length, 'chars')
-            // Fetch booking state to update sidebar
-            fetchBookingState(sessionIdRef.current).then(
-              (state) => {
-                if (!state) return
-                setAppState((prev) => ({
-                  ...prev,
-                  bookingFields: {
-                    restaurant:
-                      (state.restaurant_name as string) ??
-                      prev.bookingFields.restaurant,
-                    partySize:
-                      state.party_size
-                        ? String(state.party_size)
-                        : prev.bookingFields.partySize,
-                    date:
-                      (state.date as string) ??
-                      prev.bookingFields.date,
-                    time:
-                      (state.time as string) ??
-                      prev.bookingFields.time,
-                    occasion: prev.bookingFields.occasion,
-                  },
-                }))
-              }
-            )
-          }
-
-          if (token.type === 'error') {
-            if (process.env.NODE_ENV !== 'production') {
-              console.warn('[handleSend] stream warning:', token.message)
-            }
-            streamError = true
-            setAppState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === sageId
-                  ? { ...m, content: mapStreamError(token.message) }
-                  : m
-              ),
-            }))
-          }
+          })
         }
-      )
+
+        if (token.type === 'error') {
+          if (process.env.NODE_ENV !== 'production') {
+            console.warn('[handleSend] stream warning:', token.message)
+          }
+          streamError = true
+          setAppState((prev) => ({
+            ...prev,
+            messages: prev.messages.map((m) => (
+              m.id === sageId ? { ...m, content: mapStreamError(token.message) } : m
+            )),
+          }))
+        }
+      })
     } catch (err) {
       if (process.env.NODE_ENV !== 'production') {
         console.warn('[handleSend] streamChat warning:', err)
@@ -260,16 +241,15 @@ export default function Page() {
       if (!streamError) {
         setAppState((prev) => ({
           ...prev,
-          messages: prev.messages.map((m) =>
+          messages: prev.messages.map((m) => (
             m.id === sageId
               ? { ...m, content: 'I hit a connection issue. Please try again in a moment.' }
               : m
-          ),
+          )),
         }))
       }
     }
 
-    // If we got zero tokens and no error, remove the empty sage placeholder
     if (sageText.length === 0 && !streamError) {
       setAppState((prev) => ({
         ...prev,
@@ -278,62 +258,72 @@ export default function Page() {
     }
   }, [])
 
-  /* Suggestion card clicked — prefill and focus input */
   const handleSuggestion = useCallback((message: string) => {
     setPrefill(message)
   }, [])
 
-  /* Context panel interactions */
   const handleCheckAvailability = useCallback((restaurant: Restaurant) => {
+    setPrefill(`Check availability at ${restaurant.name} for a reservation.`)
+    setBookView('chat')
     setAppState((prev) => ({
       ...prev,
       bookingFields: { ...prev.bookingFields, restaurant: restaurant.name },
+      screen: 'book',
     }))
   }, [])
 
   const handleSelectRestaurant = useCallback((restaurant: Restaurant) => {
+    setPrefill(`I would like to make a reservation at ${restaurant.name}.`)
+    setBookView('chat')
     setAppState((prev) => ({
       ...prev,
+      bookingFields: { ...prev.bookingFields, restaurant: restaurant.name },
+      screen: 'book',
+    }))
+  }, [])
+
+  const handleNewReservation = useCallback(() => {
+    sessionIdRef.current = resetSession()
+    hasSentMessageRef.current = false
+    setPrefill(undefined)
+    setBookView('chat')
+    setAppState(makeBase())
+  }, [])
+
+  const handleBookRestaurant = useCallback((restaurant: Restaurant) => {
+    setPrefill(`I would like to make a reservation at ${restaurant.name}.`)
+    setBookView('chat')
+    setAppState((prev) => ({
+      ...prev,
+      screen: 'book',
       bookingFields: { ...prev.bookingFields, restaurant: restaurant.name },
     }))
   }, [])
 
-  /* New reservation from confirmation screen */
-  const handleNewReservation = useCallback(() => {
-    sessionIdRef.current = resetSession()
-    setUiState(1)
-    setAppState({ ...makeBase(), ...buildState(1) })
-    setPrefill(undefined)
-  }, [])
-
-  /* Book from browse screen — navigate to chat with restaurant pre-selected */
-  const handleBookRestaurant = useCallback((restaurant: Restaurant) => {
-    setUiState(1)
-    setPrefill(`I'd like to make a reservation at ${restaurant.name}.`)
-    setAppState({
-      ...makeBase(),
-      screen: 'book',
-      bookingState: 'GREETING',
-      bookingFields: { ...INITIAL_BOOKING_FIELDS, restaurant: restaurant.name },
-    })
-  }, [])
-
-
-  const isConfirmed = appState.bookingState === 'COMPLETED' && appState.confirmationCode !== null
+  const canOpenConfirmed = appState.confirmationCode !== null
+  const showConfirmed = appState.screen === 'book' && bookView === 'confirmed' && canOpenConfirmed
+  const activeView: 'browse' | 'chat' | 'confirmed' =
+    appState.screen === 'browse'
+      ? 'browse'
+      : showConfirmed
+        ? 'confirmed'
+        : 'chat'
 
   return (
     <>
-      <Navbar onNavigate={handleNavigate} />
+      <Navbar
+        onHome={handleHome}
+        onBrowse={handleBrowse}
+        onChat={handleChatView}
+        onConfirmed={handleConfirmedView}
+        activeView={activeView}
+        canOpenConfirmed={canOpenConfirmed}
+      />
 
       <main style={{ paddingTop: '60px', minHeight: '100vh' }}>
-        {/* ── Browse screen (full-width) ── */}
         {appState.screen === 'browse' ? (
-          <BrowseScreen
-            onBookRestaurant={handleBookRestaurant}
-            defaultOpenId={uiState === 4 ? 'rest-001' : null}
-          />
-        ) : isConfirmed ? (
-          /* ── Confirmation screen (chat replaced) ── */
+          <BrowseScreen onBookRestaurant={handleBookRestaurant} defaultOpenId={null} />
+        ) : showConfirmed ? (
           <div className="flex" style={{ minHeight: 'calc(100vh - 60px)' }}>
             <ConfirmedLeftColumn
               confirmationCode={appState.confirmationCode!}
@@ -343,9 +333,7 @@ export default function Page() {
             <ConfirmedRightPanel bookingFields={appState.bookingFields} />
           </div>
         ) : (
-          /* ── Normal booking experience ── */
           <div className="flex" style={{ minHeight: 'calc(100vh - 60px)' }}>
-            {/* Left column — 55% */}
             <div
               style={{
                 width: '55%',
@@ -361,8 +349,6 @@ export default function Page() {
                 prefill={prefill}
               />
             </div>
-
-            {/* Right column — 45% */}
             <ContextPanel
               state={appState}
               onCheckAvailability={handleCheckAvailability}
@@ -371,9 +357,6 @@ export default function Page() {
           </div>
         )}
       </main>
-
-      {/* Prototype navigator — reviewer only */}
-      <StateSwitcher active={uiState} onChange={handleStateChange} />
     </>
   )
 }

@@ -79,10 +79,18 @@ async def check_availability(params: dict) -> dict:
     """
     try:
         restaurant_id: str = params.get("restaurant_id", "")
-        party_size = params.get("party_size", 2)
+        party_size = params.get("party_size")
         date: str = params.get("date", "")
         preferred_time: str = params.get("preferred_time", "")
         duration_minutes: int = params.get("duration_minutes", 90)
+
+        if party_size is None:
+            return {
+                "success": False,
+                "data": None,
+                "error": "party_size is required",
+                "error_code": "INVALID_INPUT",
+            }
 
         # Coerce party_size to int safely
         try:

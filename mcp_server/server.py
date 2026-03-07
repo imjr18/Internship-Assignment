@@ -292,6 +292,7 @@ async def chat_stream(request: Request):
         return JSONResponse({"error": "empty message"}, status_code=400)
 
     async def event_stream():
+        emitted_text_token = False
         try:
             agent = _get_agent(session_id)
             async for event in agent.handle_message(message):
@@ -299,6 +300,7 @@ async def chat_stream(request: Request):
                 if etype == "token":
                     text = event.get("content", "")
                     if text:
+                        emitted_text_token = True
                         payload = json.dumps({"token": text})
                         yield f"data: {payload}\n\n"
                 elif etype == "tool_start":
@@ -310,10 +312,12 @@ async def chat_stream(request: Request):
                 elif etype == "tool_result":
                     tool_name = event.get("tool_name", "unknown")
                     result_data = event.get("result", {})
-                    # Check for booking completion
-                    if (tool_name == "create_reservation"
-                            and isinstance(result_data, dict)
-                            and result_data.get("success")):
+                    # Check for booking create/modify completion
+                    if (
+                        tool_name in {"create_reservation", "modify_reservation"}
+                        and isinstance(result_data, dict)
+                        and result_data.get("success")
+                    ):
                         booking_payload = json.dumps(
                             {"token": f"[BOOKING_COMPLETE:{json.dumps(result_data)}]"}
                         )
@@ -326,6 +330,14 @@ async def chat_stream(request: Request):
                     error_msg = event.get("error", "Unknown error")
                     payload = json.dumps({"error": error_msg})
                     yield f"data: {payload}\n\n"
+                elif etype == "done":
+                    # Fallback: if the agent produced only a final content
+                    # (no streamed token chunks), still surface it to the UI.
+                    if not emitted_text_token:
+                        final_content = str(event.get("final_content", "") or "").strip()
+                        if final_content:
+                            payload = json.dumps({"token": final_content})
+                            yield f"data: {payload}\n\n"
         except Exception as e:
             import traceback
             logger.error("chat_stream_error", error=str(e), traceback=traceback.format_exc())

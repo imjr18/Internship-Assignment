@@ -1,6 +1,6 @@
 'use client'
 
-import { getCuisineEmoji, getCuisineGradient, priceSymbols, tagLabel, DIETARY_LABELS } from '@/lib/mock-data'
+import { getCuisineEmoji, getCuisineGradient, priceSymbols, tagLabel } from '@/lib/mock-data'
 import { useRestaurants } from '@/lib/useRestaurants'
 import type { AppState, Restaurant } from '@/lib/types'
 
@@ -14,10 +14,6 @@ function MicroHeading({ children }: { children: React.ReactNode }) {
       {children}
     </p>
   )
-}
-
-function Divider() {
-  return <div style={{ height: '1px', background: '#1a1a1a', margin: '24px 0' }} />
 }
 
 /* ─── Ambiance pill ─── */
@@ -42,7 +38,13 @@ function Tag({ label }: { label: string }) {
    ZONE 1 — Featured Tonight (no search yet)
 ═══════════════════════════════════════════════ */
 
-function FeaturedCard({ restaurant }: { restaurant: Restaurant }) {
+function FeaturedCard({
+  restaurant,
+  onReserve,
+}: {
+  restaurant: Restaurant
+  onReserve: () => void
+}) {
   const gradient = getCuisineGradient(restaurant.cuisine_type)
   const emoji = getCuisineEmoji(restaurant.cuisine_type)
 
@@ -54,6 +56,7 @@ function FeaturedCard({ restaurant }: { restaurant: Restaurant }) {
         border: '1px solid #222222',
         borderRadius: '14px',
       }}
+      onClick={onReserve}
       onMouseEnter={(e) => (e.currentTarget.style.borderColor = '#c9a96e')}
       onMouseLeave={(e) => (e.currentTarget.style.borderColor = '#222222')}
     >
@@ -80,6 +83,10 @@ function FeaturedCard({ restaurant }: { restaurant: Restaurant }) {
           From {priceSymbols(restaurant.price_range)}
         </p>
         <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onReserve()
+          }}
           className="w-full transition-colors duration-150"
           style={{
             marginTop: '16px',
@@ -108,7 +115,13 @@ function FeaturedCard({ restaurant }: { restaurant: Restaurant }) {
   )
 }
 
-function SmallCard({ restaurant }: { restaurant: Restaurant }) {
+function SmallCard({
+  restaurant,
+  onSelect,
+}: {
+  restaurant: Restaurant
+  onSelect: () => void
+}) {
   const emoji = getCuisineEmoji(restaurant.cuisine_type)
   return (
     <article
@@ -120,6 +133,7 @@ function SmallCard({ restaurant }: { restaurant: Restaurant }) {
         borderRadius: '12px',
         marginBottom: '10px',
       }}
+      onClick={onSelect}
       onMouseEnter={(e) => (e.currentTarget.style.borderColor = '#c9a96e')}
       onMouseLeave={(e) => (e.currentTarget.style.borderColor = '#1e1e1e')}
     >
@@ -143,16 +157,33 @@ function SmallCard({ restaurant }: { restaurant: Restaurant }) {
   )
 }
 
-function Zone1({ restaurants }: { restaurants: Restaurant[] }) {
+function Zone1({
+  restaurants,
+  onSelectRestaurant,
+}: {
+  restaurants: Restaurant[]
+  onSelectRestaurant: (restaurant: Restaurant) => void
+}) {
   return (
     <div>
       <MicroHeading>Featured Tonight</MicroHeading>
-      {restaurants[0] && <FeaturedCard restaurant={restaurants[0]} />}
+      {restaurants[0] && (
+        <FeaturedCard
+          restaurant={restaurants[0]}
+          onReserve={() => onSelectRestaurant(restaurants[0])}
+        />
+      )}
       <div style={{ marginTop: '28px', marginBottom: '0' }}>
         <MicroHeading>Also Available Tonight</MicroHeading>
         {[restaurants[1], restaurants[2], restaurants[4]]
           .filter(Boolean)
-          .map((r) => <SmallCard key={r.id} restaurant={r} />)}
+          .map((r) => (
+            <SmallCard
+              key={r.id}
+              restaurant={r}
+              onSelect={() => onSelectRestaurant(r)}
+            />
+          ))}
       </div>
     </div>
   )
@@ -401,44 +432,6 @@ function Zone2({
 }
 
 /* ═══════════════════════════════════════════════
-   ZONE 3 — Reservation Summary (always visible)
-═══════════════════════════════════════════════ */
-
-function ReservationRow({ icon, label, value }: { icon: string; label: string; value: string | null }) {
-  return (
-    <div
-      className="flex items-center justify-between"
-      style={{ padding: '11px 0', borderBottom: '1px solid #151515' }}
-    >
-      <span
-        className="flex items-center gap-2"
-        style={{ fontSize: '12px', color: '#504a44' }}
-      >
-        <span aria-hidden="true">{icon}</span>
-        {label}
-      </span>
-      {value ? (
-        <span style={{ fontSize: '12px', fontWeight: 500, color: '#f7f3ee' }}>{value}</span>
-      ) : (
-        <span style={{ fontSize: '12px', color: '#222222' }}>&mdash;</span>
-      )}
-    </div>
-  )
-}
-
-function Zone3({ fields }: { fields: AppState['bookingFields'] }) {
-  return (
-    <div>
-      <MicroHeading>Your Reservation</MicroHeading>
-      <ReservationRow icon="👤" label="Party Size" value={fields.partySize} />
-      <ReservationRow icon="📅" label="Date" value={fields.date} />
-      <ReservationRow icon="🕐" label="Time" value={fields.time} />
-      <ReservationRow icon="✨" label="Occasion" value={fields.occasion} />
-    </div>
-  )
-}
-
-/* ═══════════════════════════════════════════════
    CONTEXT PANEL — outer shell
 ═══════════════════════════════════════════════ */
 
@@ -450,7 +443,7 @@ interface ContextPanelProps {
 
 export function ContextPanel({ state, onCheckAvailability, onSelectRestaurant }: ContextPanelProps) {
   const { restaurants } = useRestaurants()
-  const { searchResults, bookingFields } = state
+  const { searchResults } = state
   const hasResults = searchResults.length > 0
 
   return (
@@ -476,13 +469,11 @@ export function ContextPanel({ state, onCheckAvailability, onSelectRestaurant }:
           onSelectRestaurant={onSelectRestaurant}
         />
       ) : (
-        <Zone1 restaurants={restaurants} />
+        <Zone1
+          restaurants={restaurants}
+          onSelectRestaurant={onSelectRestaurant}
+        />
       )}
-
-      <Divider />
-
-      {/* Zone 3 always present */}
-      <Zone3 fields={bookingFields} />
     </aside>
   )
 }

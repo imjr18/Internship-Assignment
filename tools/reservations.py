@@ -191,6 +191,31 @@ async def modify_reservation(params: dict) -> dict:
         confirmation_code: str = params.get("confirmation_code", "")
         changes: dict = params.get("changes", {})
 
+        if not reservation_id and not confirmation_code:
+            return {
+                "success": False,
+                "data": None,
+                "error": "Provide reservation_id or confirmation_code to modify a reservation",
+                "error_code": "INVALID_INPUT",
+            }
+        if not isinstance(changes, dict):
+            return {
+                "success": False,
+                "data": None,
+                "error": "changes must be an object",
+                "error_code": "INVALID_INPUT",
+            }
+        if not changes:
+            return {
+                "success": False,
+                "data": None,
+                "error": (
+                    "No changes provided. Please specify at least one of: "
+                    "new_datetime, new_party_size, new_special_requests"
+                ),
+                "error_code": "INVALID_INPUT",
+            }
+
         # Look up reservation
         res = None
         if reservation_id:
@@ -222,13 +247,63 @@ async def modify_reservation(params: dict) -> dict:
         new_ps = changes.get("new_party_size")
         new_sr = changes.get("new_special_requests")
 
+        if new_dt is not None:
+            new_dt = str(new_dt).strip()
+            if not new_dt:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "new_datetime cannot be empty",
+                    "error_code": "INVALID_INPUT",
+                }
+
+        if new_ps is not None:
+            try:
+                new_ps = int(new_ps)
+            except Exception:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "new_party_size must be an integer > 0",
+                    "error_code": "INVALID_INPUT",
+                }
+            if new_ps <= 0:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "new_party_size must be an integer > 0",
+                    "error_code": "INVALID_INPUT",
+                }
+
+        if new_sr is not None:
+            new_sr = str(new_sr)
+
+        old_sr = str(res.get("special_requests") or "")
+        old_ps = int(res.get("party_size", 0))
+        old_dt = str(res.get("reservation_datetime") or "")
+
+        dt_changed = new_dt is not None and new_dt != old_dt
+        ps_changed = new_ps is not None and new_ps != old_ps
+        sr_changed = new_sr is not None and new_sr != old_sr
+
+        if not (dt_changed or ps_changed or sr_changed):
+            return {
+                "success": False,
+                "data": None,
+                "error": (
+                    "No effective changes detected. Please provide updated "
+                    "date/time, party size, or special requests."
+                ),
+                "error_code": "INVALID_INPUT",
+            }
+
         # If changing datetime or party_size, re-check availability
         async with get_db() as db:
             await db.execute("BEGIN EXCLUSIVE")
             try:
-                if new_dt or new_ps:
-                    check_dt = new_dt or res["reservation_datetime"]
-                    check_ps = new_ps or res["party_size"]
+                if dt_changed or ps_changed:
+                    check_dt = new_dt if dt_changed else res["reservation_datetime"]
+                    check_ps = new_ps if ps_changed else res["party_size"]
                     tables = await check_table_availability(
                         restaurant_id, check_ps, check_dt, db=db
                     )
@@ -247,13 +322,13 @@ async def modify_reservation(params: dict) -> dict:
                 sets: list[str] = ["updated_at = ?"]
                 vals: list = [now_iso]
 
-                if new_dt:
+                if dt_changed:
                     sets.append("reservation_datetime = ?")
                     vals.append(new_dt)
-                if new_ps:
+                if ps_changed:
                     sets.append("party_size = ?")
                     vals.append(new_ps)
-                if new_sr is not None:
+                if sr_changed:
                     sets.append("special_requests = ?")
                     vals.append(new_sr)
                 if new_table_id:
@@ -269,9 +344,13 @@ async def modify_reservation(params: dict) -> dict:
                 raise inner_exc
 
         updated = await get_reservation_by_id(rid)
+        restaurant = await get_restaurant_by_id(restaurant_id)
         return {
             "success": True,
-            "data": {"reservation": dict(updated) if updated else {}},
+            "data": {
+                "reservation": dict(updated) if updated else {},
+                "restaurant_name": restaurant["name"] if restaurant else None,
+            },
             "error": None,
             "error_code": None,
         }
