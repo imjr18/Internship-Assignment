@@ -1,6 +1,6 @@
 # GoodFoods AI Reservation Concierge
 
-This repository contains an end-to-end conversational reservation system built for the GoodFoods AI Agent Challenge.
+This repository contains an end-to-end conversational reservation system for GoodFoods.
 It combines business strategy deliverables with a working product implementation, so an evaluator can review both:
 - the thinking (use case, ROI, expansion, positioning)
 - the engineering (agent loop, tool calling, backend/frontend behavior, test coverage)
